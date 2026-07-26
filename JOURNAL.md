@@ -93,7 +93,7 @@ only deduplicates by `section_name`, which is already unique per section.
 
 **PLAN.md link:** https://github.com/aishadeveloper/pathreview/blob/fix/28-generator-duplicates/PLAN.md
 
-**Walkthrough video (recommended):** [to be added]
+**Walkthrough video (recommended):** Not recorded this week.
 
 **Blockers or open questions:**
 - 53 unit tests fail on this branch *before* my changes (verified by running
