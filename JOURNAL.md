@@ -77,3 +77,32 @@ repo (`break  # Only process first repo for now` in `_build_plan`), and
 `add_chunks` persists only `source_id`/`chunk_index`/`section` — both limit
 how much per-project signal reaches the generator, but neither blocks this
 work.
+
+## Week 8 — Reproduction & solution planning
+
+**Reproduction commit link:** https://github.com/aishadeveloper/pathreview/commit/5897c749a237e0901142e35673ca3ae377b990a1
+
+**Reproduction summary:**
+I reproduced the issue deterministically with unit tests in
+`tests/unit/test_review_generator.py`: two `xfail(strict=True)` tests feed
+`_consolidate_feedback` (and, via a mocked LLM client, `generate_full_review`)
+near-identical skill observations attributed to three same-stack projects and
+assert they get consolidated — both fail today, and a passing characterization
+test confirms `_consolidate_feedback` returns its input unchanged because it
+only deduplicates by `section_name`, which is already unique per section.
+
+**PLAN.md link:** https://github.com/aishadeveloper/pathreview/blob/fix/28-generator-duplicates/PLAN.md
+
+**Walkthrough video (recommended):** [to be added]
+
+**Blockers or open questions:**
+- 53 unit tests fail on this branch *before* my changes (verified by running
+  the suite with and without my commit — same 53 either way, e.g.
+  `test_json_array_fallback`, `test_tech_detector` exclusions). I'll diff
+  failure lists rather than counts in Week 9 so they don't mask regressions.
+- Before changing the parser's return shape I need to trace who consumes
+  `generate_section`'s output in `core/services` — the `sections[0]`
+  truncation might be load-bearing for non-skills sections.
+- A live end-to-end multi-project reproduction is limited by the
+  orchestrator's first-repo-only `break`; if I record the walkthrough against
+  the running app I'll need seeded multi-project data.
