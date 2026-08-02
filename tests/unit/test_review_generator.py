@@ -1,15 +1,10 @@
 """Tests for review_generator.py
 
-Reproduction for issue #28: the generator produces duplicate feedback
-sections when a user has multiple projects in the same tech stack.
-
-The two xfail tests below encode the *expected* behavior — consolidating a
-shared observation into one entry attributed to all projects it applies to.
-They fail today because `_consolidate_feedback` only deduplicates by
-`section_name` (which is already unique per section), so near-identical
-cross-project observations pass through untouched. They are marked
-`xfail(strict=True)` so they document the bug now and will flip to a hard
-failure (XPASS) once the fix lands, forcing the markers to be removed.
+Covers the fix for issue #28: the generator produced duplicate feedback
+when a user has multiple projects in the same tech stack. The tests in
+TestConsolidateFeedback started life as the xfail reproduction for the bug
+and now assert the fixed behavior: a shared observation is stated once and
+attributed to every project it applies to.
 """
 
 import json
@@ -19,11 +14,6 @@ import pytest
 
 from rag.generator.output_parser import FeedbackSection
 from rag.generator.review_generator import ReviewConfig, ReviewGenerator
-
-XFAIL_REASON = (
-    "Issue #28: _consolidate_feedback deduplicates by section_name only, "
-    "so duplicate cross-project observations are never merged"
-)
 
 
 def _mock_completion(content: str) -> Mock:
@@ -48,18 +38,27 @@ def _make_generator(responses: list[str]) -> ReviewGenerator:
     return generator
 
 
+def _skills_section(key_skills: list) -> FeedbackSection:
+    """Build a skills_feedback section holding the given key_skills."""
+    return FeedbackSection(
+        section_name="skills_feedback",
+        content=json.dumps({"key_skills": key_skills}),
+        confidence=0.9,
+        suggestions=[],
+    )
+
+
 @pytest.mark.unit
 class TestConsolidateFeedback:
-    """Reproduction tests for issue #28 (duplicate cross-project feedback)."""
+    """Consolidation of duplicate cross-project observations (issue #28)."""
 
-    @pytest.mark.xfail(reason=XFAIL_REASON, strict=True)
     def test_consolidate_merges_same_observation_across_projects(self) -> None:
-        """A skill observation repeated for three same-stack projects should
-        be consolidated into a single entry attributed to all three."""
+        """A skill observation repeated for three same-stack projects is
+        consolidated into a single entry attributed to all three."""
         observation = "Built a RAG pipeline with embeddings and vector search"
-        skills_content = json.dumps(
-            {
-                "key_skills": [
+        sections = [
+            _skills_section(
+                [
                     {
                         "skill": "Python / RAG",
                         "evidence": f"{observation} in rag-chatbot-alpha",
@@ -76,14 +75,6 @@ class TestConsolidateFeedback:
                         "project": "rag-chatbot-gamma",
                     },
                 ]
-            }
-        )
-        sections = [
-            FeedbackSection(
-                section_name="skills_feedback",
-                content=skills_content,
-                confidence=0.9,
-                suggestions=[],
             )
         ]
 
@@ -93,21 +84,34 @@ class TestConsolidateFeedback:
         combined = " ".join(s.content for s in result)
         assert combined.count("Python / RAG") == 1
 
-    @pytest.mark.xfail(reason=XFAIL_REASON, strict=True)
+        # ...and attributed to every project that demonstrated it.
+        merged = json.loads(result[0].content)["key_skills"]
+        assert len(merged) == 1
+        assert merged[0]["projects"] == [
+            "rag-chatbot-alpha",
+            "rag-chatbot-beta",
+            "rag-chatbot-gamma",
+        ]
+
     def test_full_review_does_not_repeat_feedback_per_same_stack_project(self) -> None:
-        """generate_full_review should not repeat a near-identical observation
-        once per project when the projects share a tech stack."""
+        """generate_full_review consolidates near-identical entries even when
+        the model ignores the prompt and emits one entry per project."""
         repeated_phrase = "solid Python and vector-database skills"
         skills_response = json.dumps(
             {
-                "skills_feedback": {
-                    "observations": [
-                        f"Demonstrates {repeated_phrase} in rag-chatbot-alpha.",
-                        f"Demonstrates {repeated_phrase} in rag-chatbot-beta.",
-                        f"Demonstrates {repeated_phrase} in rag-chatbot-gamma.",
-                    ],
-                    "suggestions": ["Add integration tests"],
-                }
+                "key_skills": [
+                    {
+                        "skill": "Python / vector databases",
+                        "evidence": f"Demonstrates {repeated_phrase} in {repo}.",
+                        "projects": [repo],
+                    }
+                    for repo in [
+                        "rag-chatbot-alpha",
+                        "rag-chatbot-beta",
+                        "rag-chatbot-gamma",
+                    ]
+                ],
+                "language_proficiency": {"Python": "advanced"},
             }
         )
         other_response = json.dumps(
@@ -135,26 +139,177 @@ class TestConsolidateFeedback:
 
         sections = generator.generate_full_review(profile_data, chunks)
 
-        # The shared observation should survive as ONE consolidated statement
+        # The shared observation survives as ONE consolidated statement
         # attributed to all three projects — not repeated three times.
         combined = " ".join(s.content for s in sections)
         assert combined.count(repeated_phrase) == 1
+        payload = json.loads(sections[0].content.split("\nSources:")[0])
+        assert [e["projects"] for e in payload["key_skills"]] == [
+            ["rag-chatbot-alpha", "rag-chatbot-beta", "rag-chatbot-gamma"]
+        ]
 
-
-@pytest.mark.unit
-class TestConsolidateFeedbackCurrentBehavior:
-    """Characterization of what _consolidate_feedback does today: it only
-    deduplicates by section_name, which generate_full_review already
-    guarantees to be unique — so it never changes its input."""
-
-    def test_sections_with_unique_names_pass_through_unchanged(self) -> None:
-        """With unique section names (the only real-world input), the
-        'consolidation' returns its input untouched."""
+    def test_case_and_whitespace_variants_of_a_skill_merge(self) -> None:
+        """'python' and ' Python ' are the same skill; 'Django' is not."""
         sections = [
-            FeedbackSection("skills_feedback", "duplicate text A", 0.9, []),
-            FeedbackSection("projects_feedback", "duplicate text A", 0.9, []),
+            _skills_section(
+                [
+                    {"skill": "python", "evidence": "a", "projects": ["p1"]},
+                    {"skill": " Python ", "evidence": "b", "projects": ["p2"]},
+                    {"skill": "Django", "evidence": "c", "projects": ["p1"]},
+                ]
+            )
+        ]
+
+        result = ReviewGenerator._consolidate_feedback(sections)
+
+        merged = json.loads(result[0].content)["key_skills"]
+        assert len(merged) == 2
+        assert merged[0]["skill"] == "python"  # first-seen form is kept
+        assert merged[0]["projects"] == ["p1", "p2"]
+        assert merged[1]["skill"] == "Django"
+
+    def test_different_observations_for_same_stack_are_not_merged(self) -> None:
+        """Three same-stack projects with genuinely different observations
+        keep all three entries — merging keys on the skill, not the stack."""
+        sections = [
+            _skills_section(
+                [
+                    {"skill": "API design", "evidence": "a", "projects": ["p1"]},
+                    {"skill": "Testing", "evidence": "b", "projects": ["p2"]},
+                    {"skill": "Deployment", "evidence": "c", "projects": ["p3"]},
+                ]
+            )
+        ]
+
+        result = ReviewGenerator._consolidate_feedback(sections)
+
+        merged = json.loads(result[0].content)["key_skills"]
+        assert len(merged) == 3
+
+    def test_single_project_entry_without_project_info_is_untouched(self) -> None:
+        """A lone entry with no project attribution gains no 'projects' noise
+        — single-project reviews round-trip unchanged."""
+        section = _skills_section([{"skill": "Python", "evidence": "Built one solid project"}])
+
+        result = ReviewGenerator._consolidate_feedback([section])
+
+        assert result[0] == section
+
+    def test_non_json_content_passes_through_unchanged(self) -> None:
+        """Sections whose content is not JSON (the plaintext fallback path)
+        pass through consolidation untouched."""
+        sections = [
+            FeedbackSection("skills_feedback", "plain text feedback", 0.7, []),
+            FeedbackSection("projects_feedback", "plain text feedback", 0.7, []),
         ]
 
         result = ReviewGenerator._consolidate_feedback(sections)
 
         assert result == sections
+
+    def test_entries_without_skill_name_are_preserved(self) -> None:
+        """Malformed entries (no skill name, or not a dict) are kept as-is
+        rather than dropped or crashed on."""
+        sections = [
+            _skills_section(
+                [
+                    {"skill": "Python", "evidence": "a", "projects": ["p1"]},
+                    {"skill": "Python", "evidence": "b", "projects": ["p2"]},
+                    {"evidence": "no skill name"},
+                    "just a string",
+                ]
+            )
+        ]
+
+        result = ReviewGenerator._consolidate_feedback(sections)
+
+        merged = json.loads(result[0].content)["key_skills"]
+        assert len(merged) == 3
+        assert {"evidence": "no skill name"} in merged
+        assert "just a string" in merged
+
+
+@pytest.mark.unit
+class TestProjectAwareContext:
+    """Project grouping in _format_context and _project_inventory."""
+
+    def _chunk(self, source_id: str | None, text: str = "chunk text", score: float = 0.5) -> dict:
+        metadata = {"chunk_index": 0, "section": "readme"}
+        if source_id is not None:
+            metadata["source_id"] = source_id
+        return {"text": text, "score": score, "metadata": metadata}
+
+    def test_format_context_groups_chunks_by_project(self) -> None:
+        """Interleaved chunks from two projects are grouped under one header
+        per project."""
+        chunks = [
+            self._chunk("proj-a", "a1"),
+            self._chunk("proj-b", "b1"),
+            self._chunk("proj-a", "a2"),
+        ]
+
+        context = ReviewGenerator._format_context(chunks)
+
+        assert context.count("=== Project: proj-a ===") == 1
+        assert context.count("=== Project: proj-b ===") == 1
+        # proj-a's chunks appear together, before proj-b's header
+        assert context.index("a1") < context.index("a2") < context.index("b1")
+
+    def test_format_context_limits_to_ten_chunks(self) -> None:
+        """The 10-chunk context limit is preserved."""
+        chunks = [self._chunk("proj-a", f"text-{i}") for i in range(15)]
+
+        context = ReviewGenerator._format_context(chunks)
+
+        assert "text-9" in context
+        assert "text-10" not in context
+
+    def test_project_inventory_lists_distinct_projects_in_order(self) -> None:
+        chunks = [
+            self._chunk("proj-a"),
+            self._chunk("proj-b"),
+            self._chunk("proj-a"),
+        ]
+
+        assert ReviewGenerator._project_inventory(chunks) == ["proj-a", "proj-b"]
+
+    def test_project_inventory_skips_chunks_without_source_id(self) -> None:
+        """Chunks missing source_id don't become a phantom 'unknown' project."""
+        chunks = [self._chunk("proj-a"), self._chunk(None)]
+
+        assert ReviewGenerator._project_inventory(chunks) == ["proj-a"]
+
+    def test_generate_section_passes_project_inventory_to_prompt(self) -> None:
+        """The skills prompt receives the project inventory and grouped
+        context."""
+        generator = _make_generator([json.dumps({"key_skills": []})])
+        chunks = [self._chunk("proj-a"), self._chunk("proj-b")]
+
+        generator.generate_section("skills_feedback", chunks, {"projects": []})
+
+        prompt = generator.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        assert "- proj-a" in prompt
+        assert "- proj-b" in prompt
+        assert "=== Project: proj-a ===" in prompt
+
+    def test_citations_are_added_after_consolidation(self) -> None:
+        """Sections still get source citations, appended after consolidation
+        so consolidation sees parseable JSON."""
+        skills_response = json.dumps(
+            {
+                "key_skills": [
+                    {"skill": "Python", "evidence": "a", "projects": ["proj-a"]},
+                    {"skill": "Python", "evidence": "b", "projects": ["proj-b"]},
+                ]
+            }
+        )
+        generator = _make_generator([skills_response] * 5)
+        chunks = [self._chunk("proj-a"), self._chunk("proj-b")]
+
+        sections = generator.generate_full_review({"projects": []}, chunks)
+
+        skills = sections[0]
+        assert "Sources: proj-a, proj-b" in skills.content
+        # Consolidation worked despite the citation suffix
+        payload = json.loads(skills.content.split("\nSources:")[0])
+        assert len(payload["key_skills"]) == 1
