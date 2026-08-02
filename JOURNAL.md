@@ -161,5 +161,7 @@ diffed, not counted).
 failures exist and are listed in the PR; my changes introduce no new
 failures, and all touched files pass ruff, black, and mypy.)
 
-**Draft PR feedback received from:** none yet — review requested from an AI
-mentor; will also share the PR in the cohort Slack channel.
+**Draft PR feedback received from:** PR shared in the cohort Slack channel —
+awaiting a peer review (will update with the reviewer's name when received).
+Also requested review from an AI mentor. Gave peer reviews to PRs #183 and
+#182 (issue #34).
