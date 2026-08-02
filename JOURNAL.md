@@ -106,3 +106,60 @@ only deduplicates by `section_name`, which is already unique per section.
 - A live end-to-end multi-project reproduction is limited by the
   orchestrator's first-repo-only `break`; if I record the walkthrough against
   the running app I'll need seeded multi-project data.
+
+## Week 9 — Solution building & PR submission
+
+### Check-in 1 (mid-week)
+
+**Current progress:**
+PLAN.md sub-tasks 1–3 are implemented: `_format_context` now groups chunks
+under `=== Project: <id> ===` headers with a project inventory passed to the
+prompt, a `v2` `skills_feedback` template instructs the model to emit one
+entry per skill with a `projects` list, and `parse_section_output` preserves
+the full structured payload that the old `sections[0]` fan-out was dropping.
+Confirmed before starting that `core/services` never calls `ReviewGenerator`
+(its RAG step is a placeholder), which retired the biggest risk in PLAN.md.
+
+**Next steps:**
+Implement the real `_consolidate_feedback` merge (sub-task 4), flip the Week 8
+xfail reproduction tests and add edge-case coverage (sub-task 5), then
+self-review against docs/CONTRIBUTING.md and open the PR.
+
+**Blockers:**
+The repo's pre-commit mypy hook (`disallow_untyped_defs`) checks whole files,
+so extending the legacy test files requires annotating their existing
+untyped methods — mechanical but it inflates the diff slightly.
+
+---
+
+### Check-in 2 (end of week)
+
+**PR link:** https://github.com/ascherj/pathreview/pull/573
+
+**Branch:** `fix/28-generator-duplicates`
+
+**What you built:**
+A two-layer fix for issue #28: the skills prompt now sees explicit project
+boundaries and a consolidation instruction (prevention), and
+`_consolidate_feedback` genuinely merges `key_skills` entries whose
+normalized skill names match, unioning their project lists (cure). A shared
+skill is now stated once and attributed to every project that demonstrates
+it, instead of being repeated per project.
+
+**Tests added or updated:**
+`tests/unit/test_review_generator.py` (Week 8's xfail reproduction tests now
+pass with markers removed, plus new coverage for project grouping, merge
+normalization, different-observations-not-merged, single-project no-op, and
+plaintext fallback), `tests/unit/test_output_parser.py` (new
+`parse_section_output` suite), `tests/unit/test_prompt_templates.py` (v2
+template and version selection). Unit suite: 396 passed; the 53 pre-existing
+failures are byte-identical before and after my changes (failure lists
+diffed, not counted).
+
+**Self-review confirmation:** [x] make check passes  [x] make test-unit passes
+(both in the documented sense for this codebase: repo-wide pre-existing
+failures exist and are listed in the PR; my changes introduce no new
+failures, and all touched files pass ruff, black, and mypy.)
+
+**Draft PR feedback received from:** none yet — review requested from an AI
+mentor; will also share the PR in the cohort Slack channel.
