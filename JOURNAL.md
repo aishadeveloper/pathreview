@@ -165,3 +165,128 @@ failures, and all touched files pass ruff, black, and mypy.)
 reviewed the PR on GitHub, pulled the branch and ran the suite locally;
 nothing blocking ("Really clean fix"). Also requested review from an AI
 mentor. Gave peer reviews to PRs #183 and #182 (issue #34).
+
+## Week 10 — Iteration & reflection
+
+### Reviewer feedback
+
+**Feedback received:** [x] Yes  [ ] No — still awaiting review
+
+**Summary of feedback:**
+One review came in, from the instructor Shawn Blackman (@sh4wnbk) on
+https://github.com/ascherj/pathreview/pull/573. It was an approval with no
+requested changes. He called out the merge logic specifically — that
+`_merge_duplicate_skills` normalizes skill names with `casefold()` plus
+whitespace collapsing so "Python " and "python" don't read as two different
+skills, that project lists are unioned in order without duplicates, and that
+it handles both the v2 `projects` list and the legacy singular `project` key.
+He also approved of the JSON parse falling through to returning the section
+unchanged as a safe default, and noted the value of testing both
+`_consolidate_feedback` directly and the end-to-end path through
+`generate_full_review`. He pulled the branch and ran the tests locally (13
+passed), and disclosed that he used Claude while reviewing. He also requested
+a review from an AI mentor; that one hasn't arrived, and no other reviewer or
+maintainer has commented as of the Week 10 deadline. The PR is still open and
+unmerged, which is expected for this course.
+
+**How you responded:**
+Nothing was blocking and no changes were requested, so I made no further code
+changes — I didn't want to churn the diff for its own sake after it had been
+reviewed and run clean. My reply on the PR thanks him and flags the one thing
+his review didn't touch that I still consider open: `_consolidate_feedback`
+merges on exact normalized skill names, so it won't catch genuine paraphrases
+("Python" vs "Python 3", "RAG pipelines" vs "retrieval-augmented generation").
+PLAN.md names embedding-based clustering as the upgrade path if the prompt
+layer isn't enough, and I said I'd rather leave that as a documented follow-up
+than land speculative complexity in a bug-fix PR. If the AI mentor review
+lands after the deadline I'll respond to it on the PR the same way.
+
+---
+
+### Reflection
+
+**What was harder than you expected?**
+The hardest part wasn't the fix — it was establishing what "passing" even
+meant in this repo. 53 unit tests fail on this branch before I touch anything,
+so "the suite is red" carried no signal. I had to run the suite with and
+without my commit and diff the *failure lists*, not the counts, to prove I
+hadn't regressed anything; a count comparison would have silently hidden a
+swap of one failure for another. The second surprise was scope creep from
+below: I went in expecting to rewrite one no-op method, `_consolidate_feedback`,
+and found it couldn't be written at all until the parser stopped destroying
+the data it needed — `_parse_json_output` fanned one response into one section
+per JSON key and `generate_section` kept only `sections[0]`. So a one-method
+bug became a three-file change across `review_generator.py`,
+`output_parser.py`, and `prompt_templates.py`. Third, the repo's pre-commit
+mypy hook runs `disallow_untyped_defs` on whole files, so adding tests to
+legacy test modules meant annotating their existing untyped methods first —
+mechanical, but it padded the diff in a way I had to explain in the PR.
+
+**What did you learn about working in a large codebase?**
+The main shift is that most of what you read, you don't get to change. I spent
+real time in `ingestion/vector_store` and `agent/orchestrator.py` and came away
+with two constraints I had to design *around* rather than fix: `add_chunks`
+persists only `source_id`/`chunk_index`/`section`, dropping the richer
+`primary_language`/`tech_stack` metadata that `repo_analyzer.py` computes,
+which is why `source_id` became my project key; and the orchestrator has a
+`break  # Only process first repo for now`, which is why I couldn't do a live
+end-to-end multi-project reproduction and reproduced in unit tests instead. In
+my own projects I'd have "just fixed" both and blown the scope of the PR. I
+also learned to check consumers before changing a return shape — I'd carried
+"the `sections[0]` truncation might be load-bearing" as the top risk in
+PLAN.md since Week 8, and it dissolved in ten minutes in Week 9 once I actually
+traced it and found `core/services` never calls `ReviewGenerator` at all (its
+RAG step is still a placeholder). And the codebase's own conventions did work
+for me: prompt templates were already versioned, so adding a `v2`
+`skills_feedback` template let me change model behavior without touching `v1`
+or anything depending on it.
+
+**How did AI tools help — and where did they fall short?**
+AI was most useful for orientation and for mechanical volume: tracing which
+modules call `generate_section`, mapping how a chunk flows from
+`vector_store` into `_format_context`, and grinding out the mypy annotations
+on the legacy test files. It was also good at expanding an edge case I'd named
+into a real test — the "same stack, genuinely different observations must not
+merge" case is the one I most wanted covered and least wanted to hand-write.
+Where it fell short was judgment about *how much* to build. Asked how to
+deduplicate near-identical skills, the natural answer is semantic similarity —
+embed the skill names and cluster — and the repo even has an embeddings
+provider sitting in `ingestion/embeddings/provider.py` to make that easy. That
+would have been the wrong PR: nondeterministic, slow, hard to unit test, and
+unjustified until exact-match merging is shown to be insufficient. The
+decision to do prevention in the prompt plus a deterministic exact-match cure,
+and to write down embeddings as a *conditional* follow-up, was mine. Same for
+the small behavioral calls that don't show up in a summary — that a
+single-project review must round-trip byte-identically rather than sprouting
+an "applies to: [one-project]" annotation, and that chunks with no `source_id`
+shouldn't materialize a fake "unknown" project in the attribution list. AI
+also couldn't tell me which of the 53 failures were mine; that needed me to
+run the baseline.
+
+**What would you do differently if you started over?**
+I'd capture the failing-test baseline in Week 7, the day I confirmed setup —
+not in Week 8 when I was already writing code and had to backtrack to work out
+whether I'd broken things. Second, I'd close open risks instead of carrying
+them: the `sections[0]` question sat in PLAN.md for a week and cost me nothing
+to answer once I bothered. The frontend rendering risk I listed there I never
+did resolve — I still haven't checked how `frontend/` renders a section whose
+content is a JSON string with a per-skill `projects` list, and that's the
+weakest spot in the PR. Third, I'd record the Week 8 walkthrough video. I
+skipped it because the orchestrator's first-repo-only `break` made a live
+multi-project demo awkward, but a two-minute screen recording of the xfail
+tests failing and then passing would have made the reproduction legible to a
+reviewer without them pulling the branch. And I'd write the PR description as
+I went rather than reconstructing the pre-existing-failure story at the end.
+
+**What are you most proud of from this module?**
+The reproduction, more than the fix. Writing `xfail(strict=True)` tests in
+Week 8 that fed three same-stack projects' near-identical skill observations
+into `_consolidate_feedback` and asserted consolidation meant the bug was
+pinned down as an executable, failing artifact before I wrote a line of the
+solution — and `strict=True` meant they couldn't quietly pass for the wrong
+reason. Removing those markers in Week 9 and watching them go green is the
+cleanest evidence I have that I fixed the thing I claimed to fix, and it's
+what the reviewer ended up validating when he ran the suite himself. I also
+added a characterization test proving the old method returned its input
+unchanged, so the "before" is documented in the repo and not just in this
+journal.
